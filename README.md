@@ -6,9 +6,15 @@ fixed **Asura Scans** (v23) in place of the community's v19.
 
 ## Using it
 
-This repo is **private**, so Aidoku can't read it from GitHub. To use the list,
-serve this folder somewhere your phone can reach without signing in, then add
-`<that address>/index.min.json` in Aidoku under **Settings → Source Lists**.
+In Aidoku, go to **Settings → Source Lists**, tap **+** and add:
+
+```
+https://raw.githubusercontent.com/leon-codehere/aidoku-sources/main/index.min.json
+```
+
+This only works while the repo is public, because Aidoku can't sign in to
+GitHub. Updates pushed to `main` reach the app the next time it refreshes its
+source lists (GitHub can take up to 5 minutes to serve new files).
 
 To install only the Asura fix, open `sources/en.asurascans-v23.aix` on your
 phone and choose Aidoku.
