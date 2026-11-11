@@ -5,7 +5,7 @@ A personal Aidoku source list with a patched **Asura Scans** source (v20).
 Add this URL in Aidoku under **Settings → Source Lists**:
 
 ```
-https://raw.githubusercontent.com/leonsw90/aidoku-sources/main/index.min.json
+https://raw.githubusercontent.com/leon-codehere/aidoku-sources/main/index.min.json
 ```
 
 ## What's changed
