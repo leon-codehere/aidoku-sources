@@ -33,8 +33,7 @@ a series. v22 loads series details and chapter lists from Asura's API
 as the website does.
 
 - Code: `src/en.asurascans`, a copy of the community source with the fix applied
-- Diff against upstream: `asurascans-api-fix.patch`
-- Pull request draft: `PR.md`
+- Upstream pull requests, split in two with patches and descriptions: `pr/`
 
 The source code comes from Aidoku-Community/sources and is dual-licensed under
 MIT or Apache-2.0.

@@ -1,0 +1,106 @@
+From ec565973109cce423dda912e5a8bd1c097504c70 Mon Sep 17 00:00:00 2001
+From: leon-codehere <leon-codehere@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 11:36:40 +0700
+Subject: [PATCH 2/2] fix(en.asurascans): lock early access chapters
+
+Some early access chapters have is_premium set to false, so they were
+shown as unlocked while the website shows them as locked. Also treat a
+chapter as locked while its early_access_until date is in the future.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sources/en.asurascans/res/source.json |  2 +-
+ sources/en.asurascans/src/lib.rs      |  4 +++-
+ sources/en.asurascans/src/models.rs   | 23 +++++++++++++++++------
+ 3 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/sources/en.asurascans/res/source.json b/sources/en.asurascans/res/source.json
+index 5be6e00..52cb9ed 100644
+--- a/sources/en.asurascans/res/source.json
++++ b/sources/en.asurascans/res/source.json
+@@ -2,7 +2,7 @@
+ 	"info": {
+ 		"id": "en.asurascans",
+ 		"name": "Asura Scans",
+-		"version": 20,
++		"version": 21,
+ 		"url": "https://asurascans.com",
+ 		"contentRating": 0,
+ 		"languages": ["en"],
+diff --git a/sources/en.asurascans/src/lib.rs b/sources/en.asurascans/src/lib.rs
+index a5c45fe..385d737 100644
+--- a/sources/en.asurascans/src/lib.rs
++++ b/sources/en.asurascans/src/lib.rs
+@@ -9,6 +9,7 @@ use aidoku::{
+ 	imports::{
+ 		defaults::defaults_get,
+ 		net::{Request, TimeUnit, set_rate_limit},
++		std::current_date,
+ 	},
+ 	prelude::*,
+ };
+@@ -127,12 +128,13 @@ impl Source for AsuraScans {
+ 
+ 			let show_locked = defaults_get::<bool>("showLocked").unwrap_or(true);
+ 			let is_subscribed = auth::is_subscribed();
++			let now = current_date();
+ 
+ 			manga.chapters = Some(
+ 				chapters
+ 					.into_iter()
+ 					.filter_map(|chapter| {
+-						let locked = !is_subscribed && chapter.is_locked();
++						let locked = !is_subscribed && chapter.is_locked(now);
+ 						(show_locked || !locked).then(|| chapter.into_chapter(&manga.key, locked))
+ 					})
+ 					.collect(),
+diff --git a/sources/en.asurascans/src/models.rs b/sources/en.asurascans/src/models.rs
+index b5cdec9..81f07a6 100644
+--- a/sources/en.asurascans/src/models.rs
++++ b/sources/en.asurascans/src/models.rs
+@@ -211,13 +211,22 @@ pub struct ApiChapter {
+ 	number: f32,
+ 	#[serde(default)]
+ 	is_premium: bool,
++	early_access_until: Option<String>,
+ 	published_at: Option<String>,
+ }
+ 
+ impl ApiChapter {
+-	/// Whether the chapter needs a subscription to read.
+-	pub fn is_locked(&self) -> bool {
++	/// Whether the chapter needs a subscription to read at time `now`.
++	///
++	/// Early access chapters aren't always marked as premium, so the early
++	/// access end date is checked too, matching what the website shows.
++	pub fn is_locked(&self, now: i64) -> bool {
+ 		self.is_premium
++			|| self
++				.early_access_until
++				.as_deref()
++				.and_then(parse_api_date)
++				.is_some_and(|until| until > now)
+ 	}
+ 
+ 	pub fn into_chapter(self, manga_key: &str, locked: bool) -> Chapter {
+@@ -280,11 +289,13 @@ mod tests {
+ 	#[aidoku_test]
+ 	fn test_chapter_lock() {
+ 		let chapter = |json: &str| serde_json::from_str::<ApiChapter>(json).unwrap();
+-		let premium = chapter(r#"{"number":150,"is_premium":true}"#);
+-		assert!(premium.is_locked());
++		let now = 1794371355;
+ 
+-		let free = chapter(r#"{"number":149}"#);
+-		assert!(!free.is_locked());
++		let premium = chapter(r#"{"number":150,"is_premium":true,"early_access_until":null}"#);
++		assert!(premium.is_locked(now));
++
++		let free = chapter(r#"{"number":149,"early_access_until":null}"#);
++		assert!(!free.is_locked(now));
+ 		let free = free.into_chapter("solo-farming-in-the-tower", false);
+ 		assert_eq!(free.key, "149");
+ 		assert_eq!(
+-- 
+2.45.2.windows.1
+

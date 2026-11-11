@@ -1,5 +1,26 @@
+From bd6365df6c775ebf6193504dd9e5dc861928378a Mon Sep 17 00:00:00 2001
+From: leon-codehere <leon-codehere@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 11:35:55 +0700
+Subject: [PATCH 1/2] fix(en.asurascans): load series details and chapters from
+ the API
+
+The /comics/{slug} series pages are now behind a Cloudflare challenge, so
+the ChapterListReact astro-island is never found ("Missing astro-island").
+Read series details and chapters from the API instead, as get_page_list
+already does for pages.
+
+Fixes #892, fixes #893
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ sources/en.asurascans/res/source.json |   2 +-
+ sources/en.asurascans/src/helpers.rs  |  34 ++++-
+ sources/en.asurascans/src/lib.rs      | 131 +++--------------
+ sources/en.asurascans/src/models.rs   | 196 +++++++++++++++++++++++++-
+ 4 files changed, 247 insertions(+), 116 deletions(-)
+
 diff --git a/sources/en.asurascans/res/source.json b/sources/en.asurascans/res/source.json
-index 9c7ed87..8e367bb 100644
+index 9c7ed87..5be6e00 100644
 --- a/sources/en.asurascans/res/source.json
 +++ b/sources/en.asurascans/res/source.json
 @@ -2,7 +2,7 @@
@@ -7,7 +28,7 @@ index 9c7ed87..8e367bb 100644
  		"id": "en.asurascans",
  		"name": "Asura Scans",
 -		"version": 19,
-+		"version": 22,
++		"version": 20,
  		"url": "https://asurascans.com",
  		"contentRating": 0,
  		"languages": ["en"],
@@ -67,10 +88,10 @@ index ada78ad..0becbb5 100644
 +	}
  }
 diff --git a/sources/en.asurascans/src/lib.rs b/sources/en.asurascans/src/lib.rs
-index b94ea8d..0862098 100644
+index b94ea8d..a5c45fe 100644
 --- a/sources/en.asurascans/src/lib.rs
 +++ b/sources/en.asurascans/src/lib.rs
-@@ -1,15 +1,15 @@
+@@ -1,15 +1,14 @@
  #![no_std]
  use aidoku::{
 -	Chapter, ContentRating, DeepLinkHandler, DeepLinkResult, DynamicListings, FilterValue, HashMap,
@@ -87,18 +108,17 @@ index b94ea8d..0862098 100644
  		defaults::defaults_get,
  		net::{Request, TimeUnit, set_rate_limit},
 -		std::parse_date,
-+		std::current_date,
  	},
  	prelude::*,
  };
-@@ -112,119 +112,30 @@ impl Source for AsuraScans {
+@@ -112,119 +111,29 @@ impl Source for AsuraScans {
  		needs_details: bool,
  		needs_chapters: bool,
  	) -> Result<Manga> {
 -		let url = helpers::get_manga_url(&manga.key);
 -		let html = Request::get(&url)?.html()?;
 -
-+		// The series pages now return a Cloudflare challenge to the app, so
++		// The series pages are now behind a Cloudflare challenge, so
 +		// details and chapters are read from the API instead, like pages are.
  		if needs_details {
 -			manga.title = html
@@ -186,7 +206,6 @@ index b94ea8d..0862098 100644
 +
 +			let show_locked = defaults_get::<bool>("showLocked").unwrap_or(true);
  			let is_subscribed = auth::is_subscribed();
-+			let now = current_date();
  
  			manga.chapters = Some(
 -				chapters_arr
@@ -223,13 +242,13 @@ index b94ea8d..0862098 100644
 +				chapters
 +					.into_iter()
 +					.filter_map(|chapter| {
-+						let locked = !is_subscribed && chapter.is_locked(now);
++						let locked = !is_subscribed && chapter.is_locked();
 +						(show_locked || !locked).then(|| chapter.into_chapter(&manga.key, locked))
  					})
  					.collect(),
  			);
 diff --git a/sources/en.asurascans/src/models.rs b/sources/en.asurascans/src/models.rs
-index b8db07d..81f07a6 100644
+index b8db07d..b5cdec9 100644
 --- a/sources/en.asurascans/src/models.rs
 +++ b/sources/en.asurascans/src/models.rs
 @@ -1,7 +1,18 @@
@@ -254,7 +273,7 @@ index b8db07d..81f07a6 100644
  };
  use serde::{Deserialize, Serialize};
  
-@@ -103,3 +114,193 @@ pub struct BookmarkSeries {
+@@ -103,3 +114,182 @@ pub struct BookmarkSeries {
  	slug: String,
  	title: String,
  }
@@ -355,22 +374,13 @@ index b8db07d..81f07a6 100644
 +	number: f32,
 +	#[serde(default)]
 +	is_premium: bool,
-+	early_access_until: Option<String>,
 +	published_at: Option<String>,
 +}
 +
 +impl ApiChapter {
-+	/// Whether the chapter needs a subscription to read at time `now`.
-+	///
-+	/// Early access chapters aren't always marked as premium, so the early
-+	/// access end date is checked too, matching what the website shows.
-+	pub fn is_locked(&self, now: i64) -> bool {
++	/// Whether the chapter needs a subscription to read.
++	pub fn is_locked(&self) -> bool {
 +		self.is_premium
-+			|| self
-+				.early_access_until
-+				.as_deref()
-+				.and_then(parse_api_date)
-+				.is_some_and(|until| until > now)
 +	}
 +
 +	pub fn into_chapter(self, manga_key: &str, locked: bool) -> Chapter {
@@ -433,13 +443,11 @@ index b8db07d..81f07a6 100644
 +	#[aidoku_test]
 +	fn test_chapter_lock() {
 +		let chapter = |json: &str| serde_json::from_str::<ApiChapter>(json).unwrap();
-+		let now = 1794371355;
++		let premium = chapter(r#"{"number":150,"is_premium":true}"#);
++		assert!(premium.is_locked());
 +
-+		let premium = chapter(r#"{"number":150,"is_premium":true,"early_access_until":null}"#);
-+		assert!(premium.is_locked(now));
-+
-+		let free = chapter(r#"{"number":149,"early_access_until":null}"#);
-+		assert!(!free.is_locked(now));
++		let free = chapter(r#"{"number":149}"#);
++		assert!(!free.is_locked());
 +		let free = free.into_chapter("solo-farming-in-the-tower", false);
 +		assert_eq!(free.key, "149");
 +		assert_eq!(
@@ -448,3 +456,6 @@ index b8db07d..81f07a6 100644
 +		);
 +	}
 +}
+-- 
+2.45.2.windows.1
+
