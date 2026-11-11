@@ -78,7 +78,7 @@ impl Source for AsuraScans {
 		let url = format!("{BASE_URL}/browse?{qs}");
 		let html = Request::get(url)?.html()?;
 
-		let entries = html
+		let entries: Vec<Manga> = html
 			.select("#series-grid > .series-card")
 			.map(|els| {
 				els.filter_map(|el| {
@@ -96,9 +96,12 @@ impl Source for AsuraScans {
 			})
 			.unwrap_or_default();
 
-		let has_next_page = html
-			.select_first("button[aria-label=\"Next page\"].cursor-pointer")
-			.is_some();
+		// The next page button stays enabled past the last page, so also stop
+		// once a page comes back empty.
+		let has_next_page = !entries.is_empty()
+			&& html
+				.select_first("button[aria-label=\"Next page\"].cursor-pointer")
+				.is_some();
 
 		Ok(MangaPageResult {
 			entries,
@@ -112,7 +115,7 @@ impl Source for AsuraScans {
 		needs_details: bool,
 		needs_chapters: bool,
 	) -> Result<Manga> {
-		// The series pages now return a Cloudflare challenge to the app, so
+		// The series pages are now behind a Cloudflare challenge, so
 		// details and chapters are read from the API instead, like pages are.
 		if needs_details {
 			Request::get(format!("{API_URL}/series/{}", manga.key))?
@@ -308,7 +311,11 @@ impl Home for AsuraScans {
 					value: HomeComponentValue::MangaChapterList {
 						page_size: None,
 						entries,
-						listing: None,
+						listing: Some(Listing {
+							id: "Latest".into(),
+							name: "Latest Updates".into(),
+							..Default::default()
+						}),
 					},
 				});
 			}
@@ -349,6 +356,17 @@ impl MigrationHandler for AsuraScans {
 impl ListingProvider for AsuraScans {
 	fn get_manga_list(&self, listing: Listing, page: i32) -> Result<MangaPageResult> {
 		match listing.id.as_str() {
+			// The home page only shows the 20 most recently updated series;
+			// browse sorted by update has the same order and paginates.
+			"Latest" => self.get_search_manga_list(
+				None,
+				page,
+				vec![FilterValue::Sort {
+					id: "sort".into(),
+					index: 0, // "update"
+					ascending: false,
+				}],
+			),
 			"Ranking" => {
 				let html = Request::get(format!("{BASE_URL}/series-ranking"))?.html()?;
 				let entries = html
