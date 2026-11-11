@@ -271,45 +271,58 @@ impl Home for AsuraScans {
 				.select_first("h2")
 				.and_then(|el| el.text())
 				.unwrap_or("Latest Updates".into());
-			let entries: Vec<MangaWithChapter> = latest_updates
-				.select("div.grid > div.grid")
-				.map(|els| {
-					els.filter_map(|el| {
-						let link = el.select_first("a.font-bold")?;
-						let chapter_link = el.select_first("div.flex > div > a.group.grid")?;
-						let manga_key = helpers::get_manga_key(&link.attr("abs:href")?)?;
-						let chapter_key =
-							helpers::get_chapter_key(&chapter_link.attr("abs:href")?)?;
-						let chapter_number = chapter_link
-							.select_first("span.font-medium")?
-							.text()?
-							.strip_prefix("Chapter")?
-							.trim()
-							.parse()
-							.ok();
-						Some(MangaWithChapter {
-							manga: Manga {
-								key: manga_key,
-								title: link.text()?,
-								cover: el.select_first("img").and_then(|img| img.attr("abs:src")),
-								..Default::default()
-							},
-							chapter: Chapter {
-								key: chapter_key,
-								chapter_number,
-								..Default::default()
-							},
-						})
-					})
-					.collect()
-				})
+			let props_entries = html
+				.select_first("astro-island[opts*=LatestUpdates]")
+				.and_then(|island| island.attr("props"))
+				.and_then(|props| LatestUpdatesProps::parse(&props))
+				.map(LatestUpdatesProps::into_entries)
 				.unwrap_or_default();
+			// Fall back to the 20 rendered series if the props can't be read.
+			let entries: Vec<MangaWithChapter> = if !props_entries.is_empty() {
+				props_entries
+			} else {
+				latest_updates
+					.select("div.grid > div.grid")
+					.map(|els| {
+						els.filter_map(|el| {
+							let link = el.select_first("a.font-bold")?;
+							let chapter_link = el.select_first("div.flex > div > a.group.grid")?;
+							let manga_key = helpers::get_manga_key(&link.attr("abs:href")?)?;
+							let chapter_key =
+								helpers::get_chapter_key(&chapter_link.attr("abs:href")?)?;
+							let chapter_number = chapter_link
+								.select_first("span.font-medium")?
+								.text()?
+								.strip_prefix("Chapter")?
+								.trim()
+								.parse()
+								.ok();
+							Some(MangaWithChapter {
+								manga: Manga {
+									key: manga_key,
+									title: link.text()?,
+									cover: el
+										.select_first("img")
+										.and_then(|img| img.attr("abs:src")),
+									..Default::default()
+								},
+								chapter: Chapter {
+									key: chapter_key,
+									chapter_number,
+									..Default::default()
+								},
+							})
+						})
+						.collect()
+					})
+					.unwrap_or_default()
+			};
 			if !entries.is_empty() {
 				components.push(HomeComponent {
 					title: Some(title),
 					subtitle: None,
 					value: HomeComponentValue::MangaChapterList {
-						page_size: None,
+						page_size: Some(5),
 						entries,
 						listing: Some(Listing {
 							id: "Latest".into(),

@@ -3,7 +3,7 @@ use crate::{
 	helpers::{get_chapter_url, get_manga_url, parse_api_date, split_names},
 };
 use aidoku::{
-	Chapter, ContentRating, Manga, MangaStatus, Viewer,
+	Chapter, ContentRating, Manga, MangaStatus, MangaWithChapter, Viewer,
 	alloc::{
 		string::{String, ToString},
 		vec::Vec,
@@ -15,6 +15,7 @@ use aidoku::{
 	prelude::*,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LoginStatus {
@@ -242,6 +243,91 @@ impl ApiChapter {
 	}
 }
 
+/// Props of the home page's `LatestUpdates` astro-island.
+///
+/// The page only renders 20 series, but the props hold the latest chapters
+/// of the 100 most recently updated ones.
+#[derive(Deserialize)]
+pub struct LatestUpdatesProps {
+	chapters: Vec<LatestChapter>,
+}
+
+#[derive(Deserialize)]
+struct LatestChapter {
+	number: f32,
+	published_at: Option<String>,
+	comic_name: String,
+	comic_slug: String,
+	comic_cover: Option<String>,
+}
+
+impl LatestUpdatesProps {
+	/// Parses the island's `props` attribute.
+	pub fn parse(props: &str) -> Option<Self> {
+		let value = serde_json::from_str(props).ok()?;
+		serde_json::from_value(unwrap_astro_value(value)).ok()
+	}
+
+	/// One entry per series with its newest chapter, in the page's order.
+	///
+	/// Each series' chapters are listed together, newest first.
+	pub fn into_entries(mut self) -> Vec<MangaWithChapter> {
+		self.chapters
+			.dedup_by(|next, previous| next.comic_slug == previous.comic_slug);
+		self.chapters
+			.into_iter()
+			.map(|chapter| {
+				let key = chapter.number.to_string();
+				MangaWithChapter {
+					chapter: Chapter {
+						url: Some(get_chapter_url(&key, &chapter.comic_slug)),
+						key,
+						chapter_number: Some(chapter.number),
+						date_uploaded: chapter.published_at.as_deref().and_then(parse_api_date),
+						..Default::default()
+					},
+					manga: Manga {
+						key: chapter.comic_slug,
+						title: chapter.comic_name,
+						cover: chapter.comic_cover,
+						..Default::default()
+					},
+				}
+			})
+			.collect()
+	}
+}
+
+/// Removes Astro's `[type, value]` wrappers from serialized island props.
+///
+/// Type 0 wraps a plain value or an object whose fields are wrapped too, and
+/// type 1 wraps an array of wrapped values.
+fn unwrap_astro_value(value: Value) -> Value {
+	match value {
+		Value::Array(mut pair) if pair.len() == 2 && pair[0].is_u64() => {
+			match pair.pop().unwrap_or_default() {
+				Value::Array(items) => {
+					Value::Array(items.into_iter().map(unwrap_astro_value).collect())
+				}
+				Value::Object(fields) => Value::Object(
+					fields
+						.into_iter()
+						.map(|(key, value)| (key, unwrap_astro_value(value)))
+						.collect(),
+				),
+				other => other,
+			}
+		}
+		Value::Object(fields) => Value::Object(
+			fields
+				.into_iter()
+				.map(|(key, value)| (key, unwrap_astro_value(value)))
+				.collect(),
+		),
+		other => other,
+	}
+}
+
 // Dates and descriptions aren't asserted here: aidoku-test-runner doesn't
 // support quoted literals in date formats, and its parsed HTML fragments have
 // no `body`, unlike the app.
@@ -302,5 +388,35 @@ mod tests {
 			free.url.as_deref(),
 			Some("https://asurascans.com/comics/solo-farming-in-the-tower/chapter/149")
 		);
+	}
+
+	#[aidoku_test]
+	fn test_latest_updates_props() {
+		// Trimmed from the home page: two chapters of one series, one of another.
+		let chapter = |number: u32, name: &str, slug: &str| {
+			format!(
+				r#"[0,{{"number":[0,{number}],"published_at":[0,"2026-11-10T22:58:51.231657Z"],"comic_name":[0,"{name}"],"comic_slug":[0,"{slug}"],"comic_cover":[0,"https://cdn.asurascans.com/c.webp"],"is_pinned":[0,false],"linked_novel":[0,{{"id":[0,56]}}]}}]"#
+			)
+		};
+		let props = format!(
+			r#"{{"chapters":[1,[{},{},{}]],"fallbackSeries":[1,[]],"mode":[0,"comics"]}}"#,
+			chapter(6, "Cyberpunk Chivalry", "cyberpunk-chivalry"),
+			chapter(5, "Cyberpunk Chivalry", "cyberpunk-chivalry"),
+			chapter(41, "Goblin Inc", "goblin-inc"),
+		);
+
+		let entries = LatestUpdatesProps::parse(&props).unwrap().into_entries();
+		assert_eq!(entries.len(), 2);
+		assert_eq!(entries[0].manga.key, "cyberpunk-chivalry");
+		assert_eq!(entries[0].manga.title, "Cyberpunk Chivalry");
+		assert_eq!(entries[0].chapter.key, "6");
+		assert_eq!(
+			entries[0].chapter.url.as_deref(),
+			Some("https://asurascans.com/comics/cyberpunk-chivalry/chapter/6")
+		);
+		assert_eq!(entries[1].manga.key, "goblin-inc");
+		assert_eq!(entries[1].chapter.chapter_number, Some(41.0));
+
+		assert!(LatestUpdatesProps::parse("not json").is_none());
 	}
 }
