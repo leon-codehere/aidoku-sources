@@ -1,5 +1,5 @@
 diff --git a/sources/en.asurascans/res/source.json b/sources/en.asurascans/res/source.json
-index 9c7ed87..5be6e00 100644
+index 9c7ed87..52cb9ed 100644
 --- a/sources/en.asurascans/res/source.json
 +++ b/sources/en.asurascans/res/source.json
 @@ -2,7 +2,7 @@
@@ -7,7 +7,7 @@ index 9c7ed87..5be6e00 100644
  		"id": "en.asurascans",
  		"name": "Asura Scans",
 -		"version": 19,
-+		"version": 20,
++		"version": 21,
  		"url": "https://asurascans.com",
  		"contentRating": 0,
  		"languages": ["en"],
@@ -50,10 +50,10 @@ index ada78ad..667feaa 100644
  pub fn get_manga_url(manga_id: &str) -> String {
  	format!("{BASE_URL}/comics/{manga_id}")
 diff --git a/sources/en.asurascans/src/lib.rs b/sources/en.asurascans/src/lib.rs
-index b94ea8d..3496288 100644
+index b94ea8d..8959f9d 100644
 --- a/sources/en.asurascans/src/lib.rs
 +++ b/sources/en.asurascans/src/lib.rs
-@@ -112,47 +112,38 @@ impl Source for AsuraScans {
+@@ -112,47 +112,66 @@ impl Source for AsuraScans {
  		needs_details: bool,
  		needs_chapters: bool,
  	) -> Result<Manga> {
@@ -101,10 +101,31 @@ index b94ea8d..3496288 100644
 -					_ => MangaStatus::Unknown,
 -				})
 -				.unwrap_or_default();
-+			let series = Request::get(format!("{API_URL}/series/{}", manga.key))?
-+				.json_owned::<SeriesResponse>()?
-+				.data
-+				.series;
++			let json = Request::get(format!("{API_URL}/series/{}", manga.key))?
++				.json_owned::<serde_json::Value>()?;
++			let series_json = json
++				.get("series")
++				.or_else(|| json.get("data").and_then(|d| d.get("series")))
++				.cloned()
++				.ok_or_else(|| error!("Asura API: series not found"))?;
++			let series = serde_json::from_value::<ApiSeries>(series_json)?;
++
++			let names = |s: Option<String>| -> Option<Vec<String>> {
++				let s = s?;
++				let list: Vec<String> = s
++					.split(',')
++					.map(|p| p.trim())
++					.filter(|p| !p.is_empty() && *p != "_")
++					.map(String::from)
++					.collect();
++				(!list.is_empty()).then_some(list)
++			};
++			if let Some(authors) = names(series.author) {
++				manga.authors = Some(authors);
++			}
++			if let Some(artists) = names(series.artist) {
++				manga.artists = Some(artists);
++			}
 +
 +			if let Some(title) = series.title {
 +				manga.title = title;
@@ -121,7 +142,14 @@ index b94ea8d..3496288 100644
 +					.map(|path| format!("{BASE_URL}{path}"))
 +					.unwrap_or_else(|| helpers::get_manga_url(&manga.key)),
 +			);
-+			manga.tags = Some(series.genres.into_iter().map(|g| g.name).collect());
++			manga.tags = Some(
++				series
++					.genres
++					.unwrap_or_default()
++					.into_iter()
++					.map(|g| g.name)
++					.collect(),
++			);
 +			manga.status = match series.status.as_deref() {
 +				Some("ongoing") => MangaStatus::Ongoing,
 +				Some("hiatus") => MangaStatus::Hiatus,
@@ -132,7 +160,7 @@ index b94ea8d..3496288 100644
  			let tags = manga.tags.as_deref().unwrap_or_default();
  			manga.content_rating = if tags
  				.as_ref()
-@@ -163,52 +154,33 @@ impl Source for AsuraScans {
+@@ -163,32 +182,22 @@ impl Source for AsuraScans {
  			} else {
  				ContentRating::Safe
  			};
@@ -164,26 +192,30 @@ index b94ea8d..3496288 100644
 -
 -			let json = serde_json::from_str::<serde_json::Value>(&island_props)?;
 -			let chapters_arr = json["chapters"][1]
--				.as_array()
++			let json = Request::get(format!("{API_URL}/series/{}/chapters", manga.key))?
++				.json_owned::<serde_json::Value>()?;
++			// Seen as `{"data": [...]}`; also accept a bare array or `{"chapters": [...]}`.
++			let chapters_arr = json
++				.get("data")
++				.or_else(|| json.get("chapters"))
++				.unwrap_or(&json)
+ 				.as_array()
 -				.ok_or_else(|| error!("Missing chapters"))?;
-+			let chapters_arr = Request::get(format!("{API_URL}/series/{}/chapters", manga.key))?
-+				.json_owned::<ChaptersResponse>()?
-+				.data;
++				.ok_or_else(|| error!("Asura API: chapter list not found"))?;
  
  			let skip_locked = !defaults_get::<bool>("showLocked").unwrap_or(true);
  			let is_subscribed = auth::is_subscribed();
- 
- 			manga.chapters = Some(
+@@ -197,18 +206,17 @@ impl Source for AsuraScans {
  				chapters_arr
--					.iter()
--					.filter_map(|obj| {
+ 					.iter()
+ 					.filter_map(|obj| {
 -						let obj = obj[1].as_object()?;
 -
 -						let locked = !is_subscribed
 -							&& obj.get("is_premium")?[1].as_bool().unwrap_or_default();
-+					.into_iter()
-+					.filter_map(|ch| {
-+						let locked = !is_subscribed && ch.is_premium;
++						// skip any single malformed entry instead of failing the whole list
++						let ch = serde_json::from_value::<ApiChapter>(obj.clone()).ok()?;
++						let locked = !is_subscribed && ch.is_premium.unwrap_or_default();
  						if skip_locked && locked {
  							return None;
  						}
@@ -197,26 +229,28 @@ index b94ea8d..3496288 100644
  							if let Some((before_dot, _)) = s.split_once('.') {
  								parse_date(format!("{before_dot}Z"), DATE_FORMAT)
  							} else {
+@@ -247,7 +255,7 @@ impl Source for AsuraScans {
+ 			);
+ 		}
+ 		if let Ok(json) = api_req.json_owned::<serde_json::Value>()
+-			&& let Some(page_arr) = json["data"]["chapter"]["pages"].as_array()
++			&& let Some(page_arr) = json.get("data").unwrap_or(&json)["chapter"]["pages"].as_array()
+ 		{
+ 			let pages: Vec<Page> = page_arr
+ 				.iter()
 diff --git a/sources/en.asurascans/src/models.rs b/sources/en.asurascans/src/models.rs
-index b8db07d..1cd8138 100644
+index b8db07d..c19b1a7 100644
 --- a/sources/en.asurascans/src/models.rs
 +++ b/sources/en.asurascans/src/models.rs
-@@ -103,3 +103,46 @@ pub struct BookmarkSeries {
+@@ -103,3 +103,34 @@ pub struct BookmarkSeries {
  	slug: String,
  	title: String,
  }
 +
-+/// `GET {API_URL}/series/{slug}`
-+#[derive(Deserialize)]
-+pub struct SeriesResponse {
-+	pub data: SeriesResponseData,
-+}
-+
-+#[derive(Deserialize)]
-+pub struct SeriesResponseData {
-+	pub series: ApiSeries,
-+}
-+
++/// The `series` object from `GET {API_URL}/series/{slug}`.
++///
++/// The response has been seen both as `{"series": {...}}` and as
++/// `{"data": {"series": {...}}}`, so callers locate the object first.
 +#[derive(Deserialize)]
 +pub struct ApiSeries {
 +	pub title: Option<String>,
@@ -226,8 +260,9 @@ index b8db07d..1cd8138 100644
 +	#[serde(rename = "type")]
 +	pub kind: Option<String>,
 +	pub public_url: Option<String>,
-+	#[serde(default)]
-+	pub genres: Vec<ApiGenre>,
++	pub author: Option<String>,
++	pub artist: Option<String>,
++	pub genres: Option<Vec<ApiGenre>>,
 +}
 +
 +#[derive(Deserialize)]
@@ -235,16 +270,10 @@ index b8db07d..1cd8138 100644
 +	pub name: String,
 +}
 +
-+/// `GET {API_URL}/series/{slug}/chapters`
-+#[derive(Deserialize)]
-+pub struct ChaptersResponse {
-+	pub data: Vec<ApiChapter>,
-+}
-+
++/// One entry from `GET {API_URL}/series/{slug}/chapters`.
 +#[derive(Deserialize)]
 +pub struct ApiChapter {
 +	pub number: f64,
-+	#[serde(default)]
-+	pub is_premium: bool,
++	pub is_premium: Option<bool>,
 +	pub published_at: Option<String>,
 +}
