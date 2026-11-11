@@ -1,6 +1,6 @@
 use crate::{
 	BASE_URL,
-	helpers::{get_chapter_url, get_manga_url, parse_api_date, split_names},
+	helpers::{description_text, get_chapter_url, get_manga_url, parse_api_date, split_names},
 };
 use aidoku::{
 	Chapter, ContentRating, Manga, MangaStatus, MangaWithChapter, Viewer,
@@ -8,10 +8,7 @@ use aidoku::{
 		string::{String, ToString},
 		vec::Vec,
 	},
-	imports::{
-		html::Html,
-		std::{current_date, parse_date},
-	},
+	imports::std::{current_date, parse_date},
 	prelude::*,
 };
 use serde::{Deserialize, Serialize};
@@ -168,12 +165,7 @@ impl ApiSeries {
 		manga.cover = self.cover.or(manga.cover.take());
 		manga.authors = self.author.as_deref().map(split_names);
 		manga.artists = self.artist.as_deref().map(split_names);
-		manga.description = self.description.and_then(|html| {
-			Html::parse_fragment(html)
-				.ok()?
-				.select_first("body")?
-				.text()
-		});
+		manga.description = self.description.as_deref().and_then(description_text);
 		manga.url = Some(match self.public_url {
 			Some(path) => format!("{BASE_URL}{path}"),
 			None => get_manga_url(&manga.key),
@@ -210,6 +202,7 @@ pub struct ChaptersResponse {
 #[derive(Deserialize)]
 pub struct ApiChapter {
 	number: f32,
+	title: Option<String>,
 	#[serde(default)]
 	is_premium: bool,
 	early_access_until: Option<String>,
@@ -235,6 +228,7 @@ impl ApiChapter {
 		Chapter {
 			url: Some(get_chapter_url(&key, manga_key)),
 			key,
+			title: self.title.filter(|title| !title.trim().is_empty()),
 			chapter_number: Some(self.number),
 			date_uploaded: self.published_at.as_deref().and_then(parse_api_date),
 			locked,
@@ -328,9 +322,8 @@ fn unwrap_astro_value(value: Value) -> Value {
 	}
 }
 
-// Dates and descriptions aren't asserted here: aidoku-test-runner doesn't
-// support quoted literals in date formats, and its parsed HTML fragments have
-// no `body`, unlike the app.
+// Dates aren't asserted here: aidoku-test-runner doesn't support quoted
+// literals in date formats. Descriptions are tested in helpers.rs.
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -384,10 +377,27 @@ mod tests {
 		assert!(!free.is_locked(now));
 		let free = free.into_chapter("solo-farming-in-the-tower", false);
 		assert_eq!(free.key, "149");
+		assert_eq!(free.title, None);
 		assert_eq!(
 			free.url.as_deref(),
 			Some("https://asurascans.com/comics/solo-farming-in-the-tower/chapter/149")
 		);
+	}
+
+	#[aidoku_test]
+	fn test_chapter_title() {
+		let chapter = |json: &str| {
+			serde_json::from_str::<ApiChapter>(json)
+				.unwrap()
+				.into_chapter("cyberpunk-chivalry", false)
+		};
+		assert_eq!(
+			chapter(r#"{"number":6,"title":"Enter the Void (2)"}"#)
+				.title
+				.as_deref(),
+			Some("Enter the Void (2)")
+		);
+		assert_eq!(chapter(r#"{"number":5,"title":" "}"#).title, None);
 	}
 
 	#[aidoku_test]

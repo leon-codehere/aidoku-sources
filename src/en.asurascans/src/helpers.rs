@@ -1,7 +1,7 @@
 use crate::BASE_URL;
 use aidoku::{
 	alloc::{string::String, vec::Vec},
-	imports::std::parse_date,
+	imports::{html::Html, std::parse_date},
 	prelude::*,
 };
 
@@ -52,6 +52,26 @@ pub fn parse_api_date(date: &str) -> Option<i64> {
 		Some((without_fraction, _)) => parse_date(format!("{without_fraction}Z"), FORMAT),
 		None => parse_date(date, FORMAT),
 	}
+}
+
+/// Converts an HTML description to plain text, keeping its paragraphs.
+///
+/// Descriptions use `<p>` paragraphs, `<br>` runs, empty `<p></p>` spacers,
+/// or plain text. The whole description is wrapped in a `<p>` and each `<br>`
+/// becomes a paragraph break, so every line of text ends up in a paragraph;
+/// empty paragraphs are then dropped.
+pub fn description_text(html: &str) -> Option<String> {
+	let html = format!("<p>{html}</p>")
+		.replace("<br>", "</p><p>")
+		.replace("<br/>", "</p><p>")
+		.replace("<br />", "</p><p>");
+	let paragraphs: Vec<String> = Html::parse_fragment(html)
+		.ok()?
+		.select("p")?
+		.filter_map(|p| p.text())
+		.filter(|text| !text.is_empty())
+		.collect();
+	(!paragraphs.is_empty()).then(|| paragraphs.join("\n\n"))
 }
 
 /// Splits a comma-separated list of names, skipping the `_` placeholder.
@@ -133,5 +153,26 @@ mod tests {
 		assert_eq!(split_names("Shadowless"), ["Shadowless"]);
 		assert_eq!(split_names("Mon, Beonin ,"), ["Mon", "Beonin"]);
 		assert!(split_names("_").is_empty());
+	}
+
+	#[aidoku_test]
+	fn test_description_text() {
+		assert_eq!(
+			description_text("<p>A &amp; <strong>B</strong></p><p></p><p>C</p>").as_deref(),
+			Some("A & B\n\nC")
+		);
+		assert_eq!(
+			description_text("<p>[By the Studio]<br><br>Story starts.</p><p>More.</p>").as_deref(),
+			Some("[By the Studio]\n\nStory starts.\n\nMore.")
+		);
+		assert_eq!(
+			description_text("Just plain text.").as_deref(),
+			Some("Just plain text.")
+		);
+		assert_eq!(
+			description_text("<span>First line<br>Second line</span>").as_deref(),
+			Some("First line\n\nSecond line")
+		);
+		assert_eq!(description_text("<p></p>"), None);
 	}
 }
