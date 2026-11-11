@@ -1,5 +1,5 @@
 diff --git a/sources/en.asurascans/res/source.json b/sources/en.asurascans/res/source.json
-index 9c7ed87..52cb9ed 100644
+index 9c7ed87..8e367bb 100644
 --- a/sources/en.asurascans/res/source.json
 +++ b/sources/en.asurascans/res/source.json
 @@ -2,7 +2,7 @@
@@ -7,62 +7,99 @@ index 9c7ed87..52cb9ed 100644
  		"id": "en.asurascans",
  		"name": "Asura Scans",
 -		"version": 19,
-+		"version": 21,
++		"version": 22,
  		"url": "https://asurascans.com",
  		"contentRating": 0,
  		"languages": ["en"],
 diff --git a/sources/en.asurascans/src/helpers.rs b/sources/en.asurascans/src/helpers.rs
-index ada78ad..667feaa 100644
+index ada78ad..0becbb5 100644
 --- a/sources/en.asurascans/src/helpers.rs
 +++ b/sources/en.asurascans/src/helpers.rs
-@@ -39,6 +39,33 @@ pub fn get_chapter_key(url: &str) -> Option<String> {
+@@ -1,5 +1,9 @@
+ use crate::BASE_URL;
+-use aidoku::{alloc::string::String, prelude::*};
++use aidoku::{
++	alloc::{string::String, vec::Vec},
++	imports::std::parse_date,
++	prelude::*,
++};
+ 
+ /// Returns the ID of a manga from a URL.
+ pub fn get_manga_key(url: &str) -> Option<String> {
+@@ -39,6 +43,27 @@ pub fn get_chapter_key(url: &str) -> Option<String> {
  	Some(chapter_segment[..end_pos].into())
  }
  
-+/// Converts the API's HTML description into plain text.
-+pub fn html_to_text(html: &str) -> String {
-+	let html = html
-+		.replace("</p>", "\n\n")
-+		.replace("<br>", "\n")
-+		.replace("<br/>", "\n")
-+		.replace("<br />", "\n");
-+	let mut out = String::with_capacity(html.len());
-+	let mut in_tag = false;
-+	for c in html.chars() {
-+		match c {
-+			'<' => in_tag = true,
-+			'>' => in_tag = false,
-+			_ if !in_tag => out.push(c),
-+			_ => {}
-+		}
++/// Parses an API timestamp such as `2026-11-03T18:36:44.96889Z`.
++///
++/// The fractional seconds are dropped because their length varies.
++pub fn parse_api_date(date: &str) -> Option<i64> {
++	const FORMAT: &str = "yyyy-MM-dd'T'HH:mm:ss'Z'";
++	match date.split_once('.') {
++		Some((without_fraction, _)) => parse_date(format!("{without_fraction}Z"), FORMAT),
++		None => parse_date(date, FORMAT),
 +	}
-+	out.replace("&amp;", "&")
-+		.replace("&quot;", "\"")
-+		.replace("&#39;", "'")
-+		.replace("&lt;", "<")
-+		.replace("&gt;", ">")
-+		.replace("&nbsp;", " ")
-+		.trim()
-+		.into()
++}
++
++/// Splits a comma-separated list of names, skipping the `_` placeholder.
++pub fn split_names(names: &str) -> Vec<String> {
++	names
++		.split(',')
++		.map(str::trim)
++		.filter(|name| !name.is_empty() && *name != "_")
++		.map(String::from)
++		.collect()
 +}
 +
  /// Returns full URL of a manga from a manga ID.
  pub fn get_manga_url(manga_id: &str) -> String {
  	format!("{BASE_URL}/comics/{manga_id}")
+@@ -102,4 +127,11 @@ mod tests {
+ 			Some("1")
+ 		);
+ 	}
++
++	#[aidoku_test]
++	fn test_split_names() {
++		assert_eq!(split_names("Shadowless"), ["Shadowless"]);
++		assert_eq!(split_names("Mon, Beonin ,"), ["Mon", "Beonin"]);
++		assert!(split_names("_").is_empty());
++	}
+ }
 diff --git a/sources/en.asurascans/src/lib.rs b/sources/en.asurascans/src/lib.rs
-index b94ea8d..8959f9d 100644
+index b94ea8d..0862098 100644
 --- a/sources/en.asurascans/src/lib.rs
 +++ b/sources/en.asurascans/src/lib.rs
-@@ -112,47 +112,66 @@ impl Source for AsuraScans {
+@@ -1,15 +1,15 @@
+ #![no_std]
+ use aidoku::{
+-	Chapter, ContentRating, DeepLinkHandler, DeepLinkResult, DynamicListings, FilterValue, HashMap,
+-	Home, HomeComponent, HomeComponentValue, HomeLayout, Link, Listing, ListingProvider, Manga,
+-	MangaPageResult, MangaStatus, MangaWithChapter, MigrationHandler, NotificationHandler, Page,
+-	PageContent, Result, Source, Viewer, WebLoginHandler,
++	Chapter, DeepLinkHandler, DeepLinkResult, DynamicListings, FilterValue, HashMap, Home,
++	HomeComponent, HomeComponentValue, HomeLayout, Link, Listing, ListingProvider, Manga,
++	MangaPageResult, MangaWithChapter, MigrationHandler, NotificationHandler, Page, PageContent,
++	Result, Source, WebLoginHandler,
+ 	alloc::{String, Vec, string::ToString, vec},
+ 	helpers::uri::QueryParameters,
+ 	imports::{
+ 		defaults::defaults_get,
+ 		net::{Request, TimeUnit, set_rate_limit},
+-		std::parse_date,
++		std::current_date,
+ 	},
+ 	prelude::*,
+ };
+@@ -112,119 +112,30 @@ impl Source for AsuraScans {
  		needs_details: bool,
  		needs_chapters: bool,
  	) -> Result<Manga> {
 -		let url = helpers::get_manga_url(&manga.key);
 -		let html = Request::get(&url)?.html()?;
 -
-+		// The /comics/* HTML pages are no longer reachable from the app (they now
-+		// return a Cloudflare challenge page), so details and chapters come from
-+		// the JSON API, the same way get_page_list already loads pages.
++		// The series pages now return a Cloudflare challenge to the app, so
++		// details and chapters are read from the API instead, like pages are.
  		if needs_details {
 -			manga.title = html
 -				.select_first("h1.text-xl.font-semibold")
@@ -101,69 +138,16 @@ index b94ea8d..8959f9d 100644
 -					_ => MangaStatus::Unknown,
 -				})
 -				.unwrap_or_default();
-+			let json = Request::get(format!("{API_URL}/series/{}", manga.key))?
-+				.json_owned::<serde_json::Value>()?;
-+			let series_json = json
-+				.get("series")
-+				.or_else(|| json.get("data").and_then(|d| d.get("series")))
-+				.cloned()
-+				.ok_or_else(|| error!("Asura API: series not found"))?;
-+			let series = serde_json::from_value::<ApiSeries>(series_json)?;
-+
-+			let names = |s: Option<String>| -> Option<Vec<String>> {
-+				let s = s?;
-+				let list: Vec<String> = s
-+					.split(',')
-+					.map(|p| p.trim())
-+					.filter(|p| !p.is_empty() && *p != "_")
-+					.map(String::from)
-+					.collect();
-+				(!list.is_empty()).then_some(list)
-+			};
-+			if let Some(authors) = names(series.author) {
-+				manga.authors = Some(authors);
-+			}
-+			if let Some(artists) = names(series.artist) {
-+				manga.artists = Some(artists);
-+			}
-+
-+			if let Some(title) = series.title {
-+				manga.title = title;
-+			}
-+			if series.cover.is_some() {
-+				manga.cover = series.cover;
-+			}
-+			if let Some(description) = series.description.as_deref() {
-+				manga.description = Some(helpers::html_to_text(description));
-+			}
-+			manga.url = Some(
-+				series
-+					.public_url
-+					.map(|path| format!("{BASE_URL}{path}"))
-+					.unwrap_or_else(|| helpers::get_manga_url(&manga.key)),
-+			);
-+			manga.tags = Some(
-+				series
-+					.genres
-+					.unwrap_or_default()
-+					.into_iter()
-+					.map(|g| g.name)
-+					.collect(),
-+			);
-+			manga.status = match series.status.as_deref() {
-+				Some("ongoing") => MangaStatus::Ongoing,
-+				Some("hiatus") => MangaStatus::Hiatus,
-+				Some("completed") => MangaStatus::Completed,
-+				Some("dropped") => MangaStatus::Cancelled,
-+				_ => MangaStatus::Unknown,
-+			};
- 			let tags = manga.tags.as_deref().unwrap_or_default();
- 			manga.content_rating = if tags
- 				.as_ref()
-@@ -163,32 +182,22 @@ impl Source for AsuraScans {
- 			} else {
- 				ContentRating::Safe
- 			};
+-			let tags = manga.tags.as_deref().unwrap_or_default();
+-			manga.content_rating = if tags
+-				.as_ref()
+-				.iter()
+-				.any(|e| matches!(e.as_str(), "Adult" | "Ecchi"))
+-			{
+-				ContentRating::Suggestive
+-			} else {
+-				ContentRating::Safe
+-			};
 -			manga.viewer = html
 -				.select_first(
 -					"div.flex.gap-3.pt-4.border-t > div:nth-child(2) > div > span.text-base",
@@ -176,10 +160,10 @@ index b94ea8d..8959f9d 100644
 -					_ => Viewer::Webtoon,
 -				})
 -				.unwrap_or(Viewer::Webtoon);
-+			manga.viewer = match series.kind.as_deref() {
-+				Some("mangatoon") => Viewer::RightToLeft,
-+				_ => Viewer::Webtoon,
-+			};
++			Request::get(format!("{API_URL}/series/{}", manga.key))?
++				.json_owned::<SeriesResponse>()?
++				.into_series()
++				.apply_to(&mut manga);
  		}
  
  		if needs_chapters {
@@ -192,88 +176,275 @@ index b94ea8d..8959f9d 100644
 -
 -			let json = serde_json::from_str::<serde_json::Value>(&island_props)?;
 -			let chapters_arr = json["chapters"][1]
-+			let json = Request::get(format!("{API_URL}/series/{}/chapters", manga.key))?
-+				.json_owned::<serde_json::Value>()?;
-+			// Seen as `{"data": [...]}`; also accept a bare array or `{"chapters": [...]}`.
-+			let chapters_arr = json
-+				.get("data")
-+				.or_else(|| json.get("chapters"))
-+				.unwrap_or(&json)
- 				.as_array()
+-				.as_array()
 -				.ok_or_else(|| error!("Missing chapters"))?;
-+				.ok_or_else(|| error!("Asura API: chapter list not found"))?;
- 
- 			let skip_locked = !defaults_get::<bool>("showLocked").unwrap_or(true);
+-
+-			let skip_locked = !defaults_get::<bool>("showLocked").unwrap_or(true);
++			let chapters = Request::get(format!("{API_URL}/series/{}/chapters", manga.key))?
++				.json_owned::<ChaptersResponse>()?
++				.data;
++
++			let show_locked = defaults_get::<bool>("showLocked").unwrap_or(true);
  			let is_subscribed = auth::is_subscribed();
-@@ -197,18 +206,17 @@ impl Source for AsuraScans {
- 				chapters_arr
- 					.iter()
- 					.filter_map(|obj| {
++			let now = current_date();
+ 
+ 			manga.chapters = Some(
+-				chapters_arr
+-					.iter()
+-					.filter_map(|obj| {
 -						let obj = obj[1].as_object()?;
 -
 -						let locked = !is_subscribed
 -							&& obj.get("is_premium")?[1].as_bool().unwrap_or_default();
-+						// skip any single malformed entry instead of failing the whole list
-+						let ch = serde_json::from_value::<ApiChapter>(obj.clone()).ok()?;
-+						let locked = !is_subscribed && ch.is_premium.unwrap_or_default();
- 						if skip_locked && locked {
- 							return None;
- 						}
- 
+-						if skip_locked && locked {
+-							return None;
+-						}
+-
 -						let chapter_number = obj.get("number")?[1].as_f64().map(|f| f as f32)?;
-+						let chapter_number = ch.number as f32;
- 						let key = chapter_number.to_string();
- 						const DATE_FORMAT: &str = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+-						let key = chapter_number.to_string();
+-						const DATE_FORMAT: &str = "yyyy-MM-dd'T'HH:mm:ss'Z'";
 -						let date_uploaded = obj.get("published_at")?[1].as_str().and_then(|s| {
-+						let date_uploaded = ch.published_at.as_deref().and_then(|s| {
- 							if let Some((before_dot, _)) = s.split_once('.') {
- 								parse_date(format!("{before_dot}Z"), DATE_FORMAT)
- 							} else {
-@@ -247,7 +255,7 @@ impl Source for AsuraScans {
+-							if let Some((before_dot, _)) = s.split_once('.') {
+-								parse_date(format!("{before_dot}Z"), DATE_FORMAT)
+-							} else {
+-								parse_date(s, DATE_FORMAT)
+-							}
+-						});
+-						let url = helpers::get_chapter_url(&key, &manga.key);
+-
+-						Some(Chapter {
+-							key,
+-							chapter_number: Some(chapter_number),
+-							date_uploaded,
+-							url: Some(url),
+-							locked,
+-							..Default::default()
+-						})
++				chapters
++					.into_iter()
++					.filter_map(|chapter| {
++						let locked = !is_subscribed && chapter.is_locked(now);
++						(show_locked || !locked).then(|| chapter.into_chapter(&manga.key, locked))
+ 					})
+ 					.collect(),
  			);
- 		}
- 		if let Ok(json) = api_req.json_owned::<serde_json::Value>()
--			&& let Some(page_arr) = json["data"]["chapter"]["pages"].as_array()
-+			&& let Some(page_arr) = json.get("data").unwrap_or(&json)["chapter"]["pages"].as_array()
- 		{
- 			let pages: Vec<Page> = page_arr
- 				.iter()
 diff --git a/sources/en.asurascans/src/models.rs b/sources/en.asurascans/src/models.rs
-index b8db07d..c19b1a7 100644
+index b8db07d..81f07a6 100644
 --- a/sources/en.asurascans/src/models.rs
 +++ b/sources/en.asurascans/src/models.rs
-@@ -103,3 +103,34 @@ pub struct BookmarkSeries {
+@@ -1,7 +1,18 @@
++use crate::{
++	BASE_URL,
++	helpers::{get_chapter_url, get_manga_url, parse_api_date, split_names},
++};
+ use aidoku::{
+-	Manga,
+-	alloc::{string::String, vec::Vec},
+-	imports::std::{current_date, parse_date},
++	Chapter, ContentRating, Manga, MangaStatus, Viewer,
++	alloc::{
++		string::{String, ToString},
++		vec::Vec,
++	},
++	imports::{
++		html::Html,
++		std::{current_date, parse_date},
++	},
++	prelude::*,
+ };
+ use serde::{Deserialize, Serialize};
+ 
+@@ -103,3 +114,193 @@ pub struct BookmarkSeries {
  	slug: String,
  	title: String,
  }
 +
-+/// The `series` object from `GET {API_URL}/series/{slug}`.
++/// Response of `GET {API_URL}/series/{slug}`.
 +///
-+/// The response has been seen both as `{"series": {...}}` and as
-+/// `{"data": {"series": {...}}}`, so callers locate the object first.
++/// The API has returned this both with and without a `data` wrapper.
++#[derive(Deserialize)]
++#[serde(untagged)]
++pub enum SeriesResponse {
++	Wrapped { data: SeriesData },
++	Bare(SeriesData),
++}
++
++impl SeriesResponse {
++	pub fn into_series(self) -> ApiSeries {
++		match self {
++			Self::Wrapped { data } | Self::Bare(data) => data.series,
++		}
++	}
++}
++
++#[derive(Deserialize)]
++pub struct SeriesData {
++	series: ApiSeries,
++}
++
 +#[derive(Deserialize)]
 +pub struct ApiSeries {
-+	pub title: Option<String>,
-+	pub cover: Option<String>,
-+	pub description: Option<String>,
-+	pub status: Option<String>,
++	title: String,
++	cover: Option<String>,
++	description: Option<String>,
++	status: Option<String>,
 +	#[serde(rename = "type")]
-+	pub kind: Option<String>,
-+	pub public_url: Option<String>,
-+	pub author: Option<String>,
-+	pub artist: Option<String>,
-+	pub genres: Option<Vec<ApiGenre>>,
++	kind: Option<String>,
++	public_url: Option<String>,
++	author: Option<String>,
++	artist: Option<String>,
++	#[serde(default)]
++	genres: Vec<ApiGenre>,
 +}
 +
 +#[derive(Deserialize)]
-+pub struct ApiGenre {
-+	pub name: String,
++struct ApiGenre {
++	name: String,
 +}
 +
-+/// One entry from `GET {API_URL}/series/{slug}/chapters`.
++impl ApiSeries {
++	/// Fills in the details of `manga` from this series.
++	pub fn apply_to(self, manga: &mut Manga) {
++		let tags: Vec<String> = self.genres.into_iter().map(|genre| genre.name).collect();
++
++		manga.title = self.title;
++		manga.cover = self.cover.or(manga.cover.take());
++		manga.authors = self.author.as_deref().map(split_names);
++		manga.artists = self.artist.as_deref().map(split_names);
++		manga.description = self.description.and_then(|html| {
++			Html::parse_fragment(html)
++				.ok()?
++				.select_first("body")?
++				.text()
++		});
++		manga.url = Some(match self.public_url {
++			Some(path) => format!("{BASE_URL}{path}"),
++			None => get_manga_url(&manga.key),
++		});
++		manga.status = match self.status.as_deref() {
++			Some("ongoing") => MangaStatus::Ongoing,
++			Some("hiatus") => MangaStatus::Hiatus,
++			Some("completed") => MangaStatus::Completed,
++			Some("dropped") => MangaStatus::Cancelled,
++			_ => MangaStatus::Unknown,
++		};
++		manga.content_rating = if tags
++			.iter()
++			.any(|tag| matches!(tag.as_str(), "Adult" | "Ecchi"))
++		{
++			ContentRating::Suggestive
++		} else {
++			ContentRating::Safe
++		};
++		manga.viewer = match self.kind.as_deref() {
++			Some("mangatoon") => Viewer::RightToLeft,
++			_ => Viewer::Webtoon,
++		};
++		manga.tags = Some(tags);
++	}
++}
++
++/// Response of `GET {API_URL}/series/{slug}/chapters`.
++#[derive(Deserialize)]
++pub struct ChaptersResponse {
++	pub data: Vec<ApiChapter>,
++}
++
 +#[derive(Deserialize)]
 +pub struct ApiChapter {
-+	pub number: f64,
-+	pub is_premium: Option<bool>,
-+	pub published_at: Option<String>,
++	number: f32,
++	#[serde(default)]
++	is_premium: bool,
++	early_access_until: Option<String>,
++	published_at: Option<String>,
++}
++
++impl ApiChapter {
++	/// Whether the chapter needs a subscription to read at time `now`.
++	///
++	/// Early access chapters aren't always marked as premium, so the early
++	/// access end date is checked too, matching what the website shows.
++	pub fn is_locked(&self, now: i64) -> bool {
++		self.is_premium
++			|| self
++				.early_access_until
++				.as_deref()
++				.and_then(parse_api_date)
++				.is_some_and(|until| until > now)
++	}
++
++	pub fn into_chapter(self, manga_key: &str, locked: bool) -> Chapter {
++		let key = self.number.to_string();
++		Chapter {
++			url: Some(get_chapter_url(&key, manga_key)),
++			key,
++			chapter_number: Some(self.number),
++			date_uploaded: self.published_at.as_deref().and_then(parse_api_date),
++			locked,
++			..Default::default()
++		}
++	}
++}
++
++// Dates and descriptions aren't asserted here: aidoku-test-runner doesn't
++// support quoted literals in date formats, and its parsed HTML fragments have
++// no `body`, unlike the app.
++#[cfg(test)]
++mod tests {
++	use super::*;
++	use aidoku_test::aidoku_test;
++
++	const SERIES: &str = r#"{"id":2127,"slug":"absolute-regression","title":"Absolute Regression","cover":"https://cdn.asurascans.com/c.webp","description":"<p>A &amp; B</p>","status":"ongoing","type":"manhwa","author":"Jang Yeonghun","artist":"Studio JHS","public_url":"/comics/absolute-regression-f212c582","genres":[{"id":1,"name":"Action","slug":"action"}]}"#;
++
++	fn series_details(json: &str) -> Manga {
++		let mut manga = Manga {
++			key: "absolute-regression".into(),
++			..Default::default()
++		};
++		serde_json::from_str::<SeriesResponse>(json)
++			.unwrap()
++			.into_series()
++			.apply_to(&mut manga);
++		manga
++	}
++
++	#[aidoku_test]
++	fn test_series_response_shapes() {
++		let bare = series_details(&format!(r#"{{"series":{SERIES},"recommended_series":[]}}"#));
++		let wrapped = series_details(&format!(r#"{{"data":{{"series":{SERIES}}}}}"#));
++
++		for manga in [bare, wrapped] {
++			assert_eq!(manga.title, "Absolute Regression");
++			assert_eq!(
++				manga.authors.as_deref(),
++				Some(&["Jang Yeonghun".into()][..])
++			);
++			assert_eq!(
++				manga.url.as_deref(),
++				Some("https://asurascans.com/comics/absolute-regression-f212c582")
++			);
++			assert_eq!(manga.tags.as_deref(), Some(&["Action".into()][..]));
++			assert_eq!(manga.status, MangaStatus::Ongoing);
++			assert_eq!(manga.content_rating, ContentRating::Safe);
++			assert_eq!(manga.viewer, Viewer::Webtoon);
++		}
++	}
++
++	#[aidoku_test]
++	fn test_chapter_lock() {
++		let chapter = |json: &str| serde_json::from_str::<ApiChapter>(json).unwrap();
++		let now = 1794371355;
++
++		let premium = chapter(r#"{"number":150,"is_premium":true,"early_access_until":null}"#);
++		assert!(premium.is_locked(now));
++
++		let free = chapter(r#"{"number":149,"early_access_until":null}"#);
++		assert!(!free.is_locked(now));
++		let free = free.into_chapter("solo-farming-in-the-tower", false);
++		assert_eq!(free.key, "149");
++		assert_eq!(
++			free.url.as_deref(),
++			Some("https://asurascans.com/comics/solo-farming-in-the-tower/chapter/149")
++		);
++	}
 +}

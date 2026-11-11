@@ -1,22 +1,40 @@
 # Aidoku sources
 
-A personal Aidoku source list with a patched **Asura Scans** source (v21).
+A personal Aidoku source list: every English source from the
+[Aidoku community list](https://github.com/Aidoku-Community/sources), with a
+fixed **Asura Scans** (v22) in place of the community's v19.
 
-Add this URL in Aidoku under **Settings → Source Lists**:
+## Using it
+
+This repo is **private**, so Aidoku can't read it from GitHub. To use the list,
+serve this folder somewhere your phone can reach without signing in, then add
+`<that address>/index.min.json` in Aidoku under **Settings → Source Lists**.
+
+To install only the Asura fix, open `sources/en.asurascans-v22.aix` on your
+phone and choose Aidoku.
+
+## Updating
 
 ```
-https://raw.githubusercontent.com/leon-codehere/aidoku-sources/main/index.min.json
+node update.mjs
 ```
 
-## What's changed
+This pulls the latest English sources from the community list, downloads new
+versions, deletes old files and rewrites `index.json` / `index.min.json`.
+Our own builds are listed in `overrides.json`. One is dropped automatically once
+the community publishes the same source at an equal or higher version.
 
-Asura Scans now puts its `/comics/...` series pages behind a Cloudflare check, so v19 fails with
-"Missing astro-island" when you open or refresh a series. v21 loads series details and chapter
-lists from Asura's JSON API (`api.asurascans.com`) instead. See `asurascans-api-fix.patch`
-for the code change against [Aidoku-Community/sources](https://github.com/Aidoku-Community/sources).
+## Asura Scans fix
 
-v21 also accepts the API's details response with or without its `data` wrapper (v20 failed with a JSON error after the API dropped it), and fills in author and artist.
+Asura Scans now puts its `/comics/...` series pages behind a Cloudflare check,
+so the community v19 fails with "Missing astro-island" when you open or refresh
+a series. v22 loads series details and chapter lists from Asura's API
+(`api.asurascans.com`) instead. It also marks early-access chapters as locked,
+as the website does.
 
-When the official source list publishes a fix with a higher version, prefer that one.
+- Code: `src/en.asurascans`, a copy of the community source with the fix applied
+- Diff against upstream: `asurascans-api-fix.patch`
+- Pull request draft: `PR.md`
 
-The source code comes from Aidoku-Community/sources and is dual-licensed under MIT or Apache-2.0.
+The source code comes from Aidoku-Community/sources and is dual-licensed under
+MIT or Apache-2.0.

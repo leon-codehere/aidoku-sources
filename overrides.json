@@ -1,0 +1,13 @@
+[
+	{
+		"id": "en.asurascans",
+		"name": "Asura Scans",
+		"version": 22,
+		"iconURL": "icons/en.asurascans-v22.png",
+		"downloadURL": "sources/en.asurascans-v22.aix",
+		"languages": ["en"],
+		"contentRating": 0,
+		"baseURL": "https://asurascans.com",
+		"minAppVersion": "0.7.1"
+	}
+]
